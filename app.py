@@ -402,11 +402,30 @@ if uploaded_file is not None:
         )
 
         output_name = uploaded_file.name.rsplit(".", 1)[0] + "_FLAT.xlsx"
-        st.download_button(
-            label="⬇️ Unduh file hasil (flat)",
-            data=output_buffer,
-            file_name=output_name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        csv_name = uploaded_file.name.rsplit(".", 1)[0] + "_FLAT.csv"
+        # utf-8-sig supaya karakter dan koma ribuan terbaca benar saat dibuka di Excel
+        csv_bytes = df.to_csv(index=False, sep=";").encode("utf-8-sig")
+
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.download_button(
+                label="⬇️ Unduh file hasil (Excel .xlsx)",
+                data=output_buffer,
+                file_name=output_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with col_dl2:
+            st.download_button(
+                label="⬇️ Unduh file hasil (CSV .csv)",
+                data=csv_bytes,
+                file_name=csv_name,
+                mime="text/csv",
+                use_container_width=True,
+            )
+        st.caption(
+            "File CSV menggunakan pemisah titik-koma (;) agar kolom tidak pecah saat dibuka "
+            "langsung di Excel versi Indonesia (yang memakai koma sebagai pemisah desimal)."
         )
 
         st.divider()
