@@ -57,7 +57,7 @@ def parse_workbook(file_obj):
 
     for r in range(10, ws.max_row + 1):
         b = g(ws, r, 2)   # Program / Kegiatan
-        c = g(ws, r, 3)   # Output / SubOutput
+        c = g(ws, r, 3)   # Output(KRO) / SubOutput(Output)
         e = g(ws, r, 5)   # Komponen
         f = g(ws, r, 6)   # SubKomponen
         h = g(ws, r, 8)   # Akun
@@ -182,10 +182,10 @@ def build_output_bytes(leaf_rows, header):
         ("Program Nama", lambda ri: ri["ctx"]["program_nama"]),
         ("Kegiatan Kode", lambda ri: ri["ctx"]["kegiatan_kode"]),
         ("Kegiatan Nama", lambda ri: ri["ctx"]["kegiatan_nama"]),
-        ("Output Kode", lambda ri: ri["ctx"]["output_kode"]),
-        ("Output Nama", lambda ri: ri["ctx"]["output_nama"]),
-        ("SubOutput Kode", lambda ri: ri["ctx"]["suboutput_kode"]),
-        ("SubOutput Nama", lambda ri: ri["ctx"]["suboutput_nama"]),
+        ("KRO Kode", lambda ri: ri["ctx"]["output_kode"]),
+        ("KRO Nama", lambda ri: ri["ctx"]["output_nama"]),
+        ("Output Kode", lambda ri: ri["ctx"]["suboutput_kode"]),
+        ("Output Nama", lambda ri: ri["ctx"]["suboutput_nama"]),
         ("Komponen Kode", lambda ri: ri["ctx"]["komponen_kode"]),
         ("Komponen Nama", lambda ri: ri["ctx"]["komponen_nama"]),
         ("SubKomponen Kode", lambda ri: ri["ctx"]["subkomponen_kode"]),
@@ -248,7 +248,7 @@ def build_output_bytes(leaf_rows, header):
         "Kementerian Kode": 12, "Kementerian Nama": 22, "Unit Organisasi Kode": 10,
         "Unit Organisasi Nama": 20, "Satker Kode": 10, "Satker Nama": 28, "Periode": 14,
         "Program Kode": 10, "Program Nama": 32, "Kegiatan Kode": 10, "Kegiatan Nama": 32,
-        "Output Kode": 10, "Output Nama": 28, "SubOutput Kode": 10, "SubOutput Nama": 36,
+        "KRO Kode": 10, "KRO Nama": 28, "Output Kode": 10, "Output Nama": 36,
         "Komponen Kode": 10, "Komponen Nama": 32, "SubKomponen Kode": 10,
         "SubKomponen Nama": 42, "Akun Kode": 10, "Akun Nama": 28, "Item Kode": 10,
         "Item Nama": 45, "Pagu Revisi": 16, "Lock Pagu": 12,
@@ -275,7 +275,7 @@ st.set_page_config(page_title="Flatten Laporan 16 Segmen", page_icon="📊", lay
 st.title("📊 Flatten Laporan Fa Detail (16 Segmen)")
 st.write(
     "Upload file laporan ketersediaan dana yang masih berbentuk hierarki "
-    "(Program > Kegiatan > Output > SubOutput > Komponen > SubKomponen > Akun > Item), "
+    "(Program > Kegiatan > KRO > Output > Komponen > SubKomponen > Akun > Item), "
     "dan unduh hasilnya dalam bentuk tabel flat siap pakai (satu baris per Item)."
 )
 
