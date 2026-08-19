@@ -1,7 +1,8 @@
 """
-Streamlit App - Flatten Laporan Fa Detail (16 Segmen)
--------------------------------------------------------
-Upload file laporan hierarkis (.xlsx), dapatkan file flat (.xlsx) untuk diunduh.
+Streamlit App - Flatten & Visualisasi Laporan Fa Detail (16 Segmen)
+----------------------------------------------------------------------
+Upload file laporan hierarkis (.xlsx) -> dapatkan file flat (.xlsx) + visualisasi
+realisasi anggaran (total, per Kegiatan, per Output, per Komponen).
 
 Cara jalankan lokal (di PyCharm):
     1. pip install -r requirements.txt
@@ -18,12 +19,14 @@ import io
 import re
 
 import openpyxl
+import pandas as pd
+import plotly.express as px
 import streamlit as st
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 # ----------------------------------------------------------------------
-# Logika parsing & flattening (sama seperti versi command-line)
+# Logika parsing & flattening (sama seperti versi sebelumnya)
 # ----------------------------------------------------------------------
 
 
@@ -169,6 +172,46 @@ def parse_workbook(file_obj):
     return leaf_rows, header
 
 
+def leaf_rows_to_dataframe(leaf_rows, header):
+    """Ubah leaf_rows jadi pandas DataFrame flat (dipakai untuk export & visualisasi)."""
+    records = []
+    for ri in leaf_rows:
+        c = ri["ctx"]
+        records.append({
+            "Kementerian Kode": header["kementerian_kode"],
+            "Kementerian Nama": header["kementerian_nama"],
+            "Unit Organisasi Kode": header["unit_kode"],
+            "Unit Organisasi Nama": header["unit_nama"],
+            "Satker Kode": header["satker_kode"],
+            "Satker Nama": header["satker_nama"],
+            "Periode": header["periode"],
+            "Program Kode": c["program_kode"],
+            "Program Nama": c["program_nama"],
+            "Kegiatan Kode": c["kegiatan_kode"],
+            "Kegiatan Nama": c["kegiatan_nama"],
+            "KRO Kode": c["output_kode"],
+            "KRO Nama": c["output_nama"],
+            "Output Kode": c["suboutput_kode"],
+            "Output Nama": c["suboutput_nama"],
+            "Komponen Kode": c["komponen_kode"],
+            "Komponen Nama": c["komponen_nama"],
+            "SubKomponen Kode": c["subkomponen_kode"],
+            "SubKomponen Nama": c["subkomponen_nama"],
+            "Akun Kode": c["akun_kode"],
+            "Akun Nama": c["akun_nama"],
+            "Item Kode": ri["item_kode"],
+            "Item Nama": ri["item_nama"],
+            "Pagu Revisi": ri["pagu"] or 0,
+            "Lock Pagu": ri["lock"] or 0,
+            "Realisasi Periode Lalu": ri["real_lalu"] or 0,
+            "Realisasi Periode Ini": ri["real_ini"] or 0,
+            "Realisasi s.d. Periode": ri["real_sd"] or 0,
+            "Persentase": ri["pct"] or 0,
+            "Sisa Anggaran": ri["sisa"] or 0,
+        })
+    return pd.DataFrame(records)
+
+
 def build_output_bytes(leaf_rows, header):
     columns = [
         ("Kementerian Kode", lambda ri: header["kementerian_kode"]),
@@ -267,16 +310,67 @@ def build_output_bytes(leaf_rows, header):
 
 
 # ----------------------------------------------------------------------
+# Helper visualisasi
+# ----------------------------------------------------------------------
+
+def grouped_bar(df, group_col, top_n=None):
+    """Bar chart Pagu vs Realisasi, dikelompokkan per group_col, diurutkan
+    berdasarkan Realisasi terbesar. top_n membatasi jumlah kategori yang
+    ditampilkan (sisanya digabung sebagai 'Lainnya') agar chart tetap
+    terbaca kalau kategorinya banyak (mis. per SubKomponen/Item)."""
+    agg = (
+        df.groupby(group_col, dropna=False)[["Pagu Revisi", "Realisasi s.d. Periode"]]
+        .sum()
+        .reset_index()
+    )
+    agg[group_col] = agg[group_col].fillna("(Tidak diketahui)")
+    agg = agg.sort_values("Realisasi s.d. Periode", ascending=False)
+
+    if top_n and len(agg) > top_n:
+        head = agg.iloc[:top_n]
+        rest = agg.iloc[top_n:][["Pagu Revisi", "Realisasi s.d. Periode"]].sum()
+        rest_row = pd.DataFrame([{
+            group_col: f"Lainnya ({len(agg) - top_n} item)",
+            "Pagu Revisi": rest["Pagu Revisi"],
+            "Realisasi s.d. Periode": rest["Realisasi s.d. Periode"],
+        }])
+        agg = pd.concat([head, rest_row], ignore_index=True)
+
+    agg["Persentase Realisasi"] = (
+        agg["Realisasi s.d. Periode"] / agg["Pagu Revisi"].replace(0, pd.NA) * 100
+    ).fillna(0)
+
+    melted = agg.melt(
+        id_vars=[group_col, "Persentase Realisasi"],
+        value_vars=["Pagu Revisi", "Realisasi s.d. Periode"],
+        var_name="Jenis", value_name="Nilai",
+    )
+
+    fig = px.bar(
+        melted, x="Nilai", y=group_col, color="Jenis", orientation="h",
+        barmode="group", text_auto=".2s",
+        color_discrete_map={"Pagu Revisi": "#94A3B8", "Realisasi s.d. Periode": "#1F4E78"},
+    )
+    fig.update_layout(
+        yaxis={"categoryorder": "total ascending"},
+        legend_title_text="", xaxis_title="Nilai (Rp)", yaxis_title="",
+        height=max(320, 40 * len(agg)),
+        margin=dict(l=10, r=10, t=30, b=10),
+    )
+    return fig, agg
+
+
+# ----------------------------------------------------------------------
 # UI Streamlit
 # ----------------------------------------------------------------------
 
-st.set_page_config(page_title="Flatten Laporan 16 Segmen", page_icon="📊", layout="centered")
+st.set_page_config(page_title="Flatten & Visualisasi Laporan 16 Segmen", page_icon="📊", layout="wide")
 
-st.title("📊 Flatten Laporan Fa Detail (16 Segmen)")
+st.title("📊 Flatten & Visualisasi Laporan Fa Detail (16 Segmen)")
 st.write(
     "Upload file laporan ketersediaan dana yang masih berbentuk hierarki "
-    "(Program > Kegiatan > KRO > Output > Komponen > SubKomponen > Akun > Item), "
-    "dan unduh hasilnya dalam bentuk tabel flat siap pakai (satu baris per Item)."
+    "(Program > Kegiatan > KRO > Output > Komponen > SubKomponen > Akun > Item). "
+    "Aplikasi akan menghasilkan tabel flat siap unduh, sekaligus visualisasi realisasi anggarannya."
 )
 
 uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
@@ -287,17 +381,21 @@ if uploaded_file is not None:
             file_bytes = io.BytesIO(uploaded_file.getvalue())
             leaf_rows, header = parse_workbook(file_bytes)
             output_buffer = build_output_bytes(leaf_rows, header)
+            df = leaf_rows_to_dataframe(leaf_rows, header)
 
         st.success(f"Berhasil! {len(leaf_rows)} baris data flat dihasilkan.")
 
-        total_pagu = sum(r["pagu"] or 0 for r in leaf_rows)
-        total_real_sd = sum(r["real_sd"] or 0 for r in leaf_rows)
-        total_sisa = sum(r["sisa"] or 0 for r in leaf_rows)
+        total_pagu = df["Pagu Revisi"].sum()
+        total_real = df["Realisasi s.d. Periode"].sum()
+        total_sisa = df["Sisa Anggaran"].sum()
+        pct_overall = (total_real / total_pagu * 100) if total_pagu else 0
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Pagu Revisi", f"{total_pagu:,.0f}")
-        col2.metric("Total Realisasi s.d. Periode", f"{total_real_sd:,.0f}")
-        col3.metric("Total Sisa Anggaran", f"{total_sisa:,.0f}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Pagu Revisi", f"Rp {total_pagu:,.0f}")
+        col2.metric("Total Realisasi s.d. Periode", f"Rp {total_real:,.0f}")
+        col3.metric("Sisa Anggaran", f"Rp {total_sisa:,.0f}")
+        col4.metric("% Realisasi", f"{pct_overall:.2f}%")
+        st.progress(min(pct_overall / 100, 1.0))
         st.caption(
             "Cocokkan angka di atas dengan baris 'JUMLAH SELURUHNYA' pada laporan asli "
             "untuk memastikan tidak ada data yang hilang atau terhitung dobel."
@@ -310,6 +408,37 @@ if uploaded_file is not None:
             file_name=output_name,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
+        st.divider()
+        st.subheader("📈 Visualisasi Realisasi Anggaran")
+
+        tab_keg, tab_out, tab_komp, tab_akun = st.tabs(
+            ["Per Kegiatan", "Per Output", "Per Komponen", "Per Akun"]
+        )
+
+        with tab_keg:
+            fig, agg = grouped_bar(df, "Kegiatan Nama")
+            st.plotly_chart(fig, use_container_width=True)
+            with st.expander("Lihat tabel"):
+                st.dataframe(agg, use_container_width=True, hide_index=True)
+
+        with tab_out:
+            fig, agg = grouped_bar(df, "Output Nama")
+            st.plotly_chart(fig, use_container_width=True)
+            with st.expander("Lihat tabel"):
+                st.dataframe(agg, use_container_width=True, hide_index=True)
+
+        with tab_komp:
+            fig, agg = grouped_bar(df, "Komponen Nama", top_n=15)
+            st.plotly_chart(fig, use_container_width=True)
+            with st.expander("Lihat tabel"):
+                st.dataframe(agg, use_container_width=True, hide_index=True)
+
+        with tab_akun:
+            fig, agg = grouped_bar(df, "Akun Nama", top_n=15)
+            st.plotly_chart(fig, use_container_width=True)
+            with st.expander("Lihat tabel"):
+                st.dataframe(agg, use_container_width=True, hide_index=True)
 
     except Exception as exc:
         st.error(
