@@ -7,7 +7,7 @@ Upload file laporan SP2D (.xlsx)   -> opsional, struktur segmen sama, hanya
 
 Kedua file digabung berdasarkan kode lengkap hierarki (kd_satker ... kd_item)
 sehingga hasil akhirnya adalah satu tabel flat dengan kolom tambahan
-'realisasi_sp2d' di sebelah 'realisasi_anggaran' (basis akrual).
+'realisasi_sp2d' di sebelah 'realisasi_akrual' (basis akrual).
 
 Cara jalankan lokal (di PyCharm):
     1. pip install -r requirements.txt
@@ -185,7 +185,7 @@ OUTPUT_COLUMNS = [
     ("kd_item", lambda ri, h: ri["item_kode"]),
     ("item", lambda ri, h: ri["item_nama"]),
     ("pagu_anggaran", lambda ri, h: ri["pagu"]),
-    ("realisasi_anggaran", lambda ri, h: ri["real_sd"]),
+    ("realisasi_akrual", lambda ri, h: ri["real_sd"]),
 ]
 
 # Kolom yang dipakai sebagai kunci gabung antara file Akrual & SP2D
@@ -195,14 +195,14 @@ JOIN_KEY_COLS = [
     "kd_komponen", "kd_subkomponen", "kd_akun", "kd_item",
 ]
 
-MONEY_COLS = {"pagu_anggaran", "realisasi_anggaran", "realisasi_sp2d"}
+MONEY_COLS = {"pagu_anggaran", "realisasi_akrual", "realisasi_sp2d"}
 
 COLUMN_WIDTHS = {
     "kd_satker": 10, "satker": 30, "kd_program": 10, "program": 32,
     "kd_keg": 10, "kegiatan": 32, "kd_kro": 10, "kro": 30,
     "kd_ro": 10, "ro": 36, "kd_komponen": 10, "komponen": 32,
     "kd_subkomponen": 12, "subkomponen": 42, "kd_akun": 10, "akun": 28,
-    "kd_item": 10, "item": 45, "pagu_anggaran": 16, "realisasi_anggaran": 18,
+    "kd_item": 10, "item": 45, "pagu_anggaran": 16, "realisasi_akrual": 18,
     "realisasi_sp2d": 16,
 }
 
@@ -213,7 +213,7 @@ def leaf_rows_to_dataframe(leaf_rows, header):
     for ri in leaf_rows:
         row = {name: fn(ri, header) for name, fn in OUTPUT_COLUMNS}
         row["pagu_anggaran"] = row["pagu_anggaran"] or 0
-        row["realisasi_anggaran"] = row["realisasi_anggaran"] or 0
+        row["realisasi_akrual"] = row["realisasi_akrual"] or 0
         records.append(row)
     return pd.DataFrame(records, columns=[name for name, _ in OUTPUT_COLUMNS])
 
@@ -223,8 +223,8 @@ def merge_akrual_sp2d(df_akrual, df_sp2d):
     lengkap hierarki, menambahkan kolom 'realisasi_sp2d'.
     Mengembalikan (df_gabungan, info) di mana info berisi jumlah baris
     Item yang tidak ketemu pasangannya di masing-masing sisi."""
-    sp2d_slim = df_sp2d[JOIN_KEY_COLS + ["realisasi_anggaran"]].rename(
-        columns={"realisasi_anggaran": "realisasi_sp2d"}
+    sp2d_slim = df_sp2d[JOIN_KEY_COLS + ["realisasi_akrual"]].rename(
+        columns={"realisasi_akrual": "realisasi_sp2d"}
     )
     # kalau ada duplikat kode Item yang sama persis di file SP2D, jumlahkan
     sp2d_slim = sp2d_slim.groupby(JOIN_KEY_COLS, dropna=False, as_index=False)["realisasi_sp2d"].sum()
@@ -377,7 +377,7 @@ if file_akrual is not None:
                 st.info("✅ Seluruh Item cocok sempurna antara file Akrual dan SP2D.")
 
         total_pagu = df_final["pagu_anggaran"].sum()
-        total_real = df_final["realisasi_anggaran"].sum()
+        total_real = df_final["realisasi_akrual"].sum()
         total_sisa = total_pagu - total_real
         pct_overall = (total_real / total_pagu * 100) if total_pagu else 0
 
@@ -428,15 +428,15 @@ if file_akrual is not None:
         st.subheader("📈 Visualisasi Realisasi Anggaran")
 
         if info is not None:
-            value_cols = ["pagu_anggaran", "realisasi_anggaran", "realisasi_sp2d"]
+            value_cols = ["pagu_anggaran", "realisasi_akrual", "realisasi_sp2d"]
             value_labels = {
                 "pagu_anggaran": "Pagu Anggaran",
-                "realisasi_anggaran": "Realisasi Anggaran (Akrual)",
+                "realisasi_akrual": "Realisasi Anggaran (Akrual)",
                 "realisasi_sp2d": "Realisasi SP2D",
             }
         else:
-            value_cols = ["pagu_anggaran", "realisasi_anggaran"]
-            value_labels = {"pagu_anggaran": "Pagu Anggaran", "realisasi_anggaran": "Realisasi Anggaran (Akrual)"}
+            value_cols = ["pagu_anggaran", "realisasi_akrual"]
+            value_labels = {"pagu_anggaran": "Pagu Anggaran", "realisasi_akrual": "Realisasi Anggaran (Akrual)"}
 
         tab_keg, tab_ro, tab_komp, tab_akun = st.tabs(
             ["Per Kegiatan", "Per Output (RO)", "Per Komponen", "Per Akun"]
