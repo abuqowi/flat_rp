@@ -1,15 +1,13 @@
 """
-Streamlit App - Flatten & Visualisasi Laporan Fa Detail (16 Segmen)
-----------------------------------------------------------------------
-Upload file laporan hierarkis (.xlsx) -> dapatkan file flat (.xlsx / .csv) +
-visualisasi realisasi anggaran (total, per Kegiatan, per Output/RO, per
-Komponen, per Akun).
+Streamlit App - Flatten, Gabung Akrual+SP2D & Visualisasi Laporan 16 Segmen
+----------------------------------------------------------------------------
+Upload file laporan Akrual (.xlsx) -> wajib.
+Upload file laporan SP2D (.xlsx)   -> opsional, struktur segmen sama, hanya
+                                       beda basis realisasi (kas vs akrual).
 
-Kolom output final (setelah dipangkas & disingkat):
-    kd_satker, satker, kd_program, program, kd_keg, kegiatan,
-    kd_kro, kro, kd_ro, ro, kd_komponen, komponen,
-    kd_subkomponen, subkomponen, kd_akun, akun, kd_item, item,
-    pagu_anggaran, realisasi_anggaran
+Kedua file digabung berdasarkan kode lengkap hierarki (kd_satker ... kd_item)
+sehingga hasil akhirnya adalah satu tabel flat dengan kolom tambahan
+'realisasi_sp2d' di sebelah 'realisasi_anggaran' (basis akrual).
 
 Cara jalankan lokal (di PyCharm):
     1. pip install -r requirements.txt
@@ -18,8 +16,7 @@ Cara jalankan lokal (di PyCharm):
 Cara deploy publik (gratis):
     1. Push folder ini (app.py + requirements.txt) ke sebuah repo GitHub.
     2. Buka https://share.streamlit.io -> New app -> pilih repo & file app.py.
-    3. Deploy. Anda akan dapat URL publik seperti
-       https://nama-app-anda.streamlit.app
+    3. Deploy.
 """
 
 import io
@@ -191,7 +188,14 @@ OUTPUT_COLUMNS = [
     ("realisasi_anggaran", lambda ri, h: ri["real_sd"]),
 ]
 
-MONEY_COLS = {"pagu_anggaran", "realisasi_anggaran"}
+# Kolom yang dipakai sebagai kunci gabung antara file Akrual & SP2D
+# (mengidentifikasi Item secara unik lewat seluruh jenjang kodenya)
+JOIN_KEY_COLS = [
+    "kd_satker", "kd_program", "kd_keg", "kd_kro", "kd_ro",
+    "kd_komponen", "kd_subkomponen", "kd_akun", "kd_item",
+]
+
+MONEY_COLS = {"pagu_anggaran", "realisasi_anggaran", "realisasi_sp2d"}
 
 COLUMN_WIDTHS = {
     "kd_satker": 10, "satker": 30, "kd_program": 10, "program": 32,
@@ -199,12 +203,12 @@ COLUMN_WIDTHS = {
     "kd_ro": 10, "ro": 36, "kd_komponen": 10, "komponen": 32,
     "kd_subkomponen": 12, "subkomponen": 42, "kd_akun": 10, "akun": 28,
     "kd_item": 10, "item": 45, "pagu_anggaran": 16, "realisasi_anggaran": 18,
+    "realisasi_sp2d": 16,
 }
 
 
 def leaf_rows_to_dataframe(leaf_rows, header):
-    """Ubah leaf_rows jadi pandas DataFrame flat dengan nama kolom final
-    (dipakai untuk export CSV & visualisasi)."""
+    """Ubah leaf_rows jadi pandas DataFrame flat dengan nama kolom final."""
     records = []
     for ri in leaf_rows:
         row = {name: fn(ri, header) for name, fn in OUTPUT_COLUMNS}
@@ -214,7 +218,30 @@ def leaf_rows_to_dataframe(leaf_rows, header):
     return pd.DataFrame(records, columns=[name for name, _ in OUTPUT_COLUMNS])
 
 
-def build_output_bytes(leaf_rows, header):
+def merge_akrual_sp2d(df_akrual, df_sp2d):
+    """Gabungkan df Akrual (basis utama) dengan df SP2D berdasarkan kode
+    lengkap hierarki, menambahkan kolom 'realisasi_sp2d'.
+    Mengembalikan (df_gabungan, info) di mana info berisi jumlah baris
+    Item yang tidak ketemu pasangannya di masing-masing sisi."""
+    sp2d_slim = df_sp2d[JOIN_KEY_COLS + ["realisasi_anggaran"]].rename(
+        columns={"realisasi_anggaran": "realisasi_sp2d"}
+    )
+    # kalau ada duplikat kode Item yang sama persis di file SP2D, jumlahkan
+    sp2d_slim = sp2d_slim.groupby(JOIN_KEY_COLS, dropna=False, as_index=False)["realisasi_sp2d"].sum()
+
+    merged = df_akrual.merge(sp2d_slim, on=JOIN_KEY_COLS, how="left")
+    unmatched_in_sp2d = int(merged["realisasi_sp2d"].isna().sum())
+    merged["realisasi_sp2d"] = merged["realisasi_sp2d"].fillna(0)
+
+    akrual_keys = set(map(tuple, df_akrual[JOIN_KEY_COLS].values))
+    sp2d_keys = set(map(tuple, df_sp2d[JOIN_KEY_COLS].values))
+    only_in_sp2d = len(sp2d_keys - akrual_keys)
+
+    info = {"unmatched_in_sp2d": unmatched_in_sp2d, "only_in_sp2d": only_in_sp2d}
+    return merged, info
+
+
+def build_output_bytes(df, columns_order):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Data Flat"
@@ -226,28 +253,27 @@ def build_output_bytes(leaf_rows, header):
     thin = Side(style="thin", color="D9D9D9")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    for j, (name, _fn) in enumerate(OUTPUT_COLUMNS, start=1):
+    for j, name in enumerate(columns_order, start=1):
         cell = ws.cell(row=1, column=j, value=name)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = border
 
-    money_col_idx = [j for j, (name, _fn) in enumerate(OUTPUT_COLUMNS, start=1) if name in MONEY_COLS]
+    money_col_idx = [j for j, name in enumerate(columns_order, start=1) if name in MONEY_COLS]
 
-    for i, ri in enumerate(leaf_rows, start=2):
-        for j, (_name, fn) in enumerate(OUTPUT_COLUMNS, start=1):
-            val = fn(ri, header)
-            cell = ws.cell(row=i, column=j, value=val)
+    for i, (_, row) in enumerate(df.iterrows(), start=2):
+        for j, name in enumerate(columns_order, start=1):
+            cell = ws.cell(row=i, column=j, value=row[name])
             cell.font = cell_font
             cell.border = border
             if j in money_col_idx:
                 cell.number_format = "#,##0"
 
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(OUTPUT_COLUMNS))}{len(leaf_rows) + 1}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(columns_order))}{len(df) + 1}"
 
-    for j, (name, _fn) in enumerate(OUTPUT_COLUMNS, start=1):
+    for j, name in enumerate(columns_order, start=1):
         ws.column_dimensions[get_column_letter(j)].width = COLUMN_WIDTHS.get(name, 14)
 
     ws.sheet_view.showGridLines = False
@@ -262,45 +288,26 @@ def build_output_bytes(leaf_rows, header):
 # Helper visualisasi
 # ----------------------------------------------------------------------
 
-def grouped_bar(df, group_col, top_n=None):
-    """Bar chart pagu_anggaran vs realisasi_anggaran, dikelompokkan per
-    group_col, diurutkan berdasarkan realisasi terbesar. top_n membatasi
-    jumlah kategori yang ditampilkan (sisanya digabung 'Lainnya')."""
-    agg = (
-        df.groupby(group_col, dropna=False)[["pagu_anggaran", "realisasi_anggaran"]]
-        .sum()
-        .reset_index()
-    )
+def grouped_bar(df, group_col, value_cols, value_labels, top_n=None):
+    agg = df.groupby(group_col, dropna=False)[value_cols].sum().reset_index()
     agg[group_col] = agg[group_col].fillna("(Tidak diketahui)")
-    agg = agg.sort_values("realisasi_anggaran", ascending=False)
+    sort_col = value_cols[-1]
+    agg = agg.sort_values(sort_col, ascending=False)
 
     if top_n and len(agg) > top_n:
         head = agg.iloc[:top_n]
-        rest = agg.iloc[top_n:][["pagu_anggaran", "realisasi_anggaran"]].sum()
-        rest_row = pd.DataFrame([{
-            group_col: f"Lainnya ({len(agg) - top_n} item)",
-            "pagu_anggaran": rest["pagu_anggaran"],
-            "realisasi_anggaran": rest["realisasi_anggaran"],
-        }])
+        rest = agg.iloc[top_n:][value_cols].sum()
+        rest_row = pd.DataFrame([{group_col: f"Lainnya ({len(agg) - top_n} item)", **rest.to_dict()}])
         agg = pd.concat([head, rest_row], ignore_index=True)
 
-    agg["persentase_realisasi"] = (
-        agg["realisasi_anggaran"] / agg["pagu_anggaran"].replace(0, pd.NA) * 100
-    ).fillna(0)
+    melted = agg.melt(id_vars=[group_col], value_vars=value_cols, var_name="Jenis", value_name="Nilai")
+    melted["Jenis"] = melted["Jenis"].map(value_labels)
 
-    melted = agg.melt(
-        id_vars=[group_col, "persentase_realisasi"],
-        value_vars=["pagu_anggaran", "realisasi_anggaran"],
-        var_name="Jenis", value_name="Nilai",
-    )
-    melted["Jenis"] = melted["Jenis"].map({
-        "pagu_anggaran": "Pagu Anggaran", "realisasi_anggaran": "Realisasi Anggaran",
-    })
+    color_map = {"Pagu Anggaran": "#94A3B8", "Realisasi Anggaran (Akrual)": "#1F4E78", "Realisasi SP2D": "#2E9E5B"}
 
     fig = px.bar(
         melted, x="Nilai", y=group_col, color="Jenis", orientation="h",
-        barmode="group", text_auto=".2s",
-        color_discrete_map={"Pagu Anggaran": "#94A3B8", "Realisasi Anggaran": "#1F4E78"},
+        barmode="group", text_auto=".2s", color_discrete_map=color_map,
     )
     fig.update_layout(
         yaxis={"categoryorder": "total ascending"},
@@ -319,98 +326,145 @@ st.set_page_config(page_title="Flatten & Visualisasi Laporan 16 Segmen", page_ic
 
 st.title("📊 Flatten & Visualisasi Laporan Fa Detail (16 Segmen)")
 st.write(
-    "Upload file laporan ketersediaan dana yang masih berbentuk hierarki "
-    "(Program > Kegiatan > KRO > RO/Output > Komponen > SubKomponen > Akun > Item). "
-    "Aplikasi akan menghasilkan tabel flat siap unduh (Excel & CSV), sekaligus visualisasi realisasi anggarannya."
+    "Upload laporan **Akrual** (wajib) dan opsional laporan **SP2D** dengan struktur segmen "
+    "yang sama. Kedua file akan digabung menjadi satu tabel flat, ditambah kolom "
+    "`realisasi_sp2d` bila file SP2D diisi."
 )
 
-uploaded_file = st.file_uploader("Upload file Excel (.xlsx)", type=["xlsx"])
+col_up1, col_up2 = st.columns(2)
+with col_up1:
+    file_akrual = st.file_uploader(
+        "1️⃣ Upload File Akrual (wajib)", type=["xlsx"], key="akrual",
+        help='Contoh nama file: "Laporan Fa Detail (16 Segmen)-horti-akrual-060826.xlsx"',
+    )
+with col_up2:
+    file_sp2d = st.file_uploader(
+        "2️⃣ Upload File SP2D (opsional)", type=["xlsx"], key="sp2d",
+        help='Contoh nama file: "Laporan Fa Detail (16 Segmen)-horti-sp2d-060826.xlsx"',
+    )
 
-if uploaded_file is not None:
+if file_akrual is not None:
     try:
-        with st.spinner("Memproses file..."):
-            file_bytes = io.BytesIO(uploaded_file.getvalue())
-            leaf_rows, header = parse_workbook(file_bytes)
-            output_buffer = build_output_bytes(leaf_rows, header)
-            df = leaf_rows_to_dataframe(leaf_rows, header)
+        with st.spinner("Memproses file Akrual..."):
+            leaf_rows_a, header_a = parse_workbook(io.BytesIO(file_akrual.getvalue()))
+            df_akrual = leaf_rows_to_dataframe(leaf_rows_a, header_a)
 
-        st.success(f"Berhasil! {len(leaf_rows)} baris data flat dihasilkan.")
+        df_final = df_akrual
+        columns_order = [name for name, _ in OUTPUT_COLUMNS]
+        info = None
 
-        total_pagu = df["pagu_anggaran"].sum()
-        total_real = df["realisasi_anggaran"].sum()
+        if file_sp2d is not None:
+            with st.spinner("Memproses file SP2D & menggabungkan..."):
+                leaf_rows_s, header_s = parse_workbook(io.BytesIO(file_sp2d.getvalue()))
+                df_sp2d = leaf_rows_to_dataframe(leaf_rows_s, header_s)
+                df_final, info = merge_akrual_sp2d(df_akrual, df_sp2d)
+                columns_order = columns_order + ["realisasi_sp2d"]
+
+        st.success(f"Berhasil! {len(df_final)} baris data flat dihasilkan.")
+
+        if info is not None:
+            if info["unmatched_in_sp2d"] > 0:
+                st.warning(
+                    f"⚠️ {info['unmatched_in_sp2d']} baris Item di file Akrual tidak ditemukan "
+                    "pasangannya di file SP2D (realisasi_sp2d diisi 0 untuk baris tsb)."
+                )
+            if info["only_in_sp2d"] > 0:
+                st.warning(
+                    f"⚠️ {info['only_in_sp2d']} baris Item ada di file SP2D tapi tidak ada di file "
+                    "Akrual, sehingga tidak ikut ditampilkan (tabel mengikuti baris file Akrual)."
+                )
+            if info["unmatched_in_sp2d"] == 0 and info["only_in_sp2d"] == 0:
+                st.info("✅ Seluruh Item cocok sempurna antara file Akrual dan SP2D.")
+
+        total_pagu = df_final["pagu_anggaran"].sum()
+        total_real = df_final["realisasi_anggaran"].sum()
         total_sisa = total_pagu - total_real
         pct_overall = (total_real / total_pagu * 100) if total_pagu else 0
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Pagu Anggaran", f"Rp {total_pagu:,.0f}")
-        col2.metric("Total Realisasi Anggaran", f"Rp {total_real:,.0f}")
-        col3.metric("Sisa Anggaran", f"Rp {total_sisa:,.0f}")
-        col4.metric("% Realisasi", f"{pct_overall:.2f}%")
+        if info is not None:
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Total Pagu Anggaran", f"Rp {total_pagu:,.0f}")
+            col2.metric("Realisasi (Akrual)", f"Rp {total_real:,.0f}")
+            col3.metric("Realisasi (SP2D)", f"Rp {df_final['realisasi_sp2d'].sum():,.0f}")
+            col4.metric("Sisa Anggaran", f"Rp {total_sisa:,.0f}")
+            col5.metric("% Realisasi Akrual", f"{pct_overall:.2f}%")
+        else:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Total Pagu Anggaran", f"Rp {total_pagu:,.0f}")
+            col2.metric("Total Realisasi Anggaran", f"Rp {total_real:,.0f}")
+            col3.metric("Sisa Anggaran", f"Rp {total_sisa:,.0f}")
+            col4.metric("% Realisasi", f"{pct_overall:.2f}%")
+
         st.progress(min(pct_overall / 100, 1.0))
         st.caption(
             "Cocokkan Total Pagu & Realisasi di atas dengan baris 'JUMLAH SELURUHNYA' pada "
             "laporan asli untuk memastikan tidak ada data yang hilang atau terhitung dobel."
         )
 
-        base_name = uploaded_file.name.rsplit(".", 1)[0]
-        csv_bytes = df.to_csv(index=False, sep=";").encode("utf-8-sig")
+        base_name = file_akrual.name.rsplit(".", 1)[0].replace("-akrual", "").replace("akrual", "")
+        output_buffer = build_output_bytes(df_final, columns_order)
+        csv_bytes = df_final[columns_order].to_csv(index=False, sep=";").encode("utf-8-sig")
 
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
             st.download_button(
-                label="⬇️ Unduh file hasil (Excel .xlsx)",
-                data=output_buffer,
+                "⬇️ Unduh file hasil (Excel .xlsx)", data=output_buffer,
                 file_name=f"{base_name}_FLAT.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
         with col_dl2:
             st.download_button(
-                label="⬇️ Unduh file hasil (CSV .csv)",
-                data=csv_bytes,
-                file_name=f"{base_name}_FLAT.csv",
-                mime="text/csv",
+                "⬇️ Unduh file hasil (CSV .csv)", data=csv_bytes,
+                file_name=f"{base_name}_FLAT.csv", mime="text/csv",
                 use_container_width=True,
             )
         st.caption(
             "File CSV menggunakan pemisah titik-koma (;) agar kolom tidak pecah saat dibuka "
-            "langsung di Excel versi Indonesia (yang memakai koma sebagai pemisah desimal)."
+            "langsung di Excel versi Indonesia."
         )
 
         st.divider()
         st.subheader("📈 Visualisasi Realisasi Anggaran")
 
+        if info is not None:
+            value_cols = ["pagu_anggaran", "realisasi_anggaran", "realisasi_sp2d"]
+            value_labels = {
+                "pagu_anggaran": "Pagu Anggaran",
+                "realisasi_anggaran": "Realisasi Anggaran (Akrual)",
+                "realisasi_sp2d": "Realisasi SP2D",
+            }
+        else:
+            value_cols = ["pagu_anggaran", "realisasi_anggaran"]
+            value_labels = {"pagu_anggaran": "Pagu Anggaran", "realisasi_anggaran": "Realisasi Anggaran (Akrual)"}
+
         tab_keg, tab_ro, tab_komp, tab_akun = st.tabs(
             ["Per Kegiatan", "Per Output (RO)", "Per Komponen", "Per Akun"]
         )
-
         with tab_keg:
-            fig, agg = grouped_bar(df, "kegiatan")
+            fig, agg = grouped_bar(df_final, "kegiatan", value_cols, value_labels)
             st.plotly_chart(fig, use_container_width=True)
             with st.expander("Lihat tabel"):
                 st.dataframe(agg, use_container_width=True, hide_index=True)
-
         with tab_ro:
-            fig, agg = grouped_bar(df, "ro")
+            fig, agg = grouped_bar(df_final, "ro", value_cols, value_labels)
             st.plotly_chart(fig, use_container_width=True)
             with st.expander("Lihat tabel"):
                 st.dataframe(agg, use_container_width=True, hide_index=True)
-
         with tab_komp:
-            fig, agg = grouped_bar(df, "komponen", top_n=15)
+            fig, agg = grouped_bar(df_final, "komponen", value_cols, value_labels, top_n=15)
             st.plotly_chart(fig, use_container_width=True)
             with st.expander("Lihat tabel"):
                 st.dataframe(agg, use_container_width=True, hide_index=True)
-
         with tab_akun:
-            fig, agg = grouped_bar(df, "akun", top_n=15)
+            fig, agg = grouped_bar(df_final, "akun", value_cols, value_labels, top_n=15)
             st.plotly_chart(fig, use_container_width=True)
             with st.expander("Lihat tabel"):
                 st.dataframe(agg, use_container_width=True, hide_index=True)
 
         st.divider()
         st.subheader("🔍 Pratinjau Data Flat")
-        st.dataframe(df.head(50), use_container_width=True, hide_index=True)
+        st.dataframe(df_final[columns_order].head(50), use_container_width=True, hide_index=True)
 
     except Exception as exc:
         st.error(
@@ -419,4 +473,4 @@ if uploaded_file is not None:
         )
         st.exception(exc)
 else:
-    st.info("Silakan upload file Excel untuk mulai memproses.")
+    st.info("Silakan upload minimal file Akrual untuk mulai memproses.")
